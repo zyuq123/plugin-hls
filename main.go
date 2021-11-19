@@ -28,8 +28,9 @@ var config struct {
 	Fragment     int64
 	Window       int
 	EnableWrite  bool   //启动HLS写文件
-	EnableMemory bool   // 启动内存模式
+	EnableMemory bool   // 启动内存直播模式
 	Path         string //存放路径
+	SliceNum     int64  //切割数量
 }
 
 func init() {
@@ -92,7 +93,12 @@ func init() {
 			}
 		} else if strings.HasSuffix(r.URL.Path, ".ts") {
 			tsPath := filepath.Join(config.Path, strings.TrimPrefix(r.URL.Path, "/hls/"))
-			if config.EnableMemory {
+			log.Println("ts request coming", tsPath)
+			//如何区分直播还是录播文件
+			mode := strings.Contains(tsPath, "_")
+			//分为两种模式，一种是直播模式，一种是录播模式，使用相同的接口，区别就在于
+			//请求的是不是包含_
+			if config.EnableMemory && mode {
 				if tsData, ok := memoryTs.Load(tsPath); ok {
 					w.Write(mpegts.DefaultPATPacket)
 					w.Write(mpegts.DefaultPMTPacket)
@@ -103,7 +109,7 @@ func init() {
 			} else {
 				if f, err := os.Open(tsPath); err == nil {
 					io.Copy(w, f)
-					err = f.Close()
+					f.Close()
 				} else {
 					w.WriteHeader(404)
 				}
