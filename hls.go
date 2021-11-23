@@ -205,3 +205,89 @@ func (this *Playlist) handleError() {
 		fmt.Println(err)
 	}
 }
+
+//实例化VOD m3u8
+func (pl *Playlist) InitVodFile(filename string) (err error) {
+	defer pl.handleError()
+
+	if utils.Exist(filename) {
+		return
+		// if err = os.Remove(filename); err != nil {
+		// 	return
+		// }
+	}
+
+	var file *os.File
+	file, err = os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	// ss := fmt.Sprintf("#EXTM3U\n"+
+	// 	"#EXT-X-VERSION:%d\n"+
+	// 	"#EXT-X-MEDIA-SEQUENCE:%d\n"+
+	// 	"#EXT-X-TARGETDURATION:%d\n"+
+	// 	"#EXT-X-PLAYLIST-TYPE:%d\n"+
+	// 	"#EXT-X-DISCONTINUITY:%d\n"+
+	// 	"#EXT-X-KEY:METHOD=%s,URI=%s,IV=%s\n"+
+	// 	"#EXT-X-ENDLIST", hls.Version, hls.Sequence, hls.Targetduration, hls.PlaylistType, hls.Discontinuity, hls.Key.Method, hls.Key.Uri, hls.Key.IV)
+
+	ss := fmt.Sprintf("#EXTM3U\n"+
+		"#EXT-X-VERSION:%d\n"+
+		"#EXT-X-PLAYLIST-TYPE:VOD\n"+
+		"#EXT-X-TARGETDURATION:%d\n"+
+		"#EXT-X-ENDLIST", pl.Version, pl.Targetduration)
+
+	if _, err = file.WriteString(ss); err != nil {
+		return
+	}
+
+	return
+}
+
+func (pl *Playlist) WriteVODInf(filename string, tmpFilename string, inf PlaylistInf) (err error) {
+
+	defer pl.handleError()
+
+	var tmpFile *os.File
+	tmpFile, err = os.OpenFile(tmpFilename, os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return
+	}
+
+	var ls []string
+	var newContent string
+	if ls, err = utils.ReadFileLines(filename); err != nil {
+		return
+	}
+
+	//删除最后一个元素，也就是删除了#EXT-X-ENDLIST
+	ls = ls[:len(ls)-1]
+	for _, v := range ls {
+		newContent += v + "\n"
+	}
+
+	ss := fmt.Sprintf("#EXTINF:%.3f,\n"+
+		"%s\n", inf.Duration, inf.Title)
+
+	newContent += ss
+	newContent += "#EXT-X-ENDLIST"
+
+	//log.Println("newcontent ", newContent)
+	if _, err = tmpFile.WriteString(newContent); err != nil {
+		return
+	}
+	if err = tmpFile.Close(); err != nil {
+		return
+	}
+
+	if err = os.Remove(filename); err != nil {
+		return
+	}
+
+	if err = os.Rename(tmpFilename, filename); err != nil {
+		return
+	}
+	return
+
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +38,10 @@ var config struct {
 func init() {
 	config.Fragment = 10
 	config.Window = 2
+	//实例化数据局
+	OpenDB()
+	CreateTsInfoTable()
+
 	InstallPlugin(&PluginConfig{
 		Name:   "HLS",
 		Config: &config,
@@ -114,6 +120,127 @@ func init() {
 					w.WriteHeader(404)
 				}
 			}
+		}
+	})
+	//获取录播文件的m3u8
+	//此处有个疑问:请求指定时间段的m3u8的时候，返回的ts文件路径并没有IP信息，需要查看m3u8文件的URL生成规则
+	//经过深入的研究，原来是请求m3u8的网址将文件替换，继续请求ts文件，抓包分析的
+	//请求m3u8的URL：http://127.0.0.1:8080/getVod/getM3u8?streamPath=live/main&startTime=1637138192&endTime=1637138232
+	http.HandleFunc("/getVod/", func(w http.ResponseWriter, r *http.Request) {
+		CORS(w, r)
+		if strings.HasSuffix(r.URL.Path, ".ts") {
+
+			tsPath := filepath.Join(config.Path, strings.TrimPrefix(r.URL.Path, "/getVod/"))
+			log.Println("ts vod request coming", tsPath)
+
+			if f, err := os.Open(tsPath); err == nil {
+				io.Copy(w, f)
+				f.Close()
+			} else {
+				w.WriteHeader(404)
+			}
+
+		} else {
+			streamPath := r.URL.Query().Get("streamPath")
+			startTime := r.URL.Query().Get("startTime")
+			endTime := r.URL.Query().Get("endTime")
+			if len(streamPath)*len(startTime)*len(endTime) == 0 {
+				log.Println("参数设置不全")
+				return
+			}
+			log.Println(streamPath, startTime, endTime)
+			//参数校验，时间最大跨度不能超过24H
+			startUnix, _ := strconv.ParseInt(startTime, 10, 64)
+			endUnix, _ := strconv.ParseInt(endTime, 10, 64)
+			if endUnix-startUnix > 60*60*24 {
+				//返回时间跨度不能超过24H
+				log.Println("时间跨度不能超过24H")
+				return
+			}
+
+			//1:遍历streamPath路径下所有的文件，筛选满足条件的先存储起来
+			//tsDir := filepath.Join(config.Path, streamPath)
+
+			//返回数据库存储的满足条件的m3u8
+			users := GetTsSet()
+			selectedUsers := GetTsSetWithCondition(users, startUnix, endUnix)
+
+			allInfoMap := make([]*PlaylistInf, 0)
+			for _, v := range selectedUsers {
+				prefixPath := filepath.Join(streamPath, v.Title)
+				currentInf := &PlaylistInf{
+					Title:    strings.Replace(prefixPath, "\\", "/", -1),
+					Duration: v.Duration,
+				}
+				allInfoMap = append(allInfoMap, currentInf)
+			}
+
+			/*
+				for _, v := range selectedUsers {
+					name := strings.TrimSuffix(v.Title, ".ts")
+					ts_name_unix, _ := strconv.ParseInt(name, 10, 64)
+					if ts_name_unix > startUnix && ts_name_unix < endUnix {
+						meetConditionList = append(meetConditionList, filepath.Join(tsDir, v.Title))
+					}
+				}
+				fmt.Println(len(meetConditionList))
+			*/
+
+			//2:满足条件的文件名称以及时长获取
+			//问题一：如何不去获取之前m3u8,直接知道ts文件的时长
+			// exec.Command("ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ")
+
+			//for _, v := range meetConditionList {
+			/*
+				cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", v)
+				output, err := cmd.Output()
+
+				if err == nil {
+					v2, _ := strconv.ParseFloat(compressStr(string(output)), 64)
+					currentInf := &PlaylistInf{
+						Title:    strings.Replace(strings.TrimPrefix(v, "resource\\"), "\\", "/", -1),
+						Duration: v2,
+					}
+					allInfoMap = append(allInfoMap, currentInf)
+				}
+			*/
+			//}
+			//3:开始组装m3u8，返回给客户端即可，无需写入文件
+			plHeader := Playlist{
+				Version:        3,
+				Sequence:       0,
+				Targetduration: int(config.Fragment * 1000 / 666),
+			}
+			writeContent := fmt.Sprintf("#EXTM3U\n"+
+				"#EXT-X-VERSION:%d\n"+
+				"#EXT-X-PLAYLIST-TYPE:VOD\n"+
+				"#EXT-X-TARGETDURATION:%d\n", plHeader.Version, plHeader.Targetduration)
+			for _, v := range allInfoMap {
+				ss := fmt.Sprintf("#EXTINF:%.3f,\n"+
+					"%s\n", v.Duration, v.Title)
+				writeContent += ss
+			}
+			writeContent += "#EXT-X-ENDLIST"
+			w.Write([]byte(writeContent))
+		}
+
+	})
+
+	//列举出当前录制的文件源
+	//列举出当前录制的文件源
+	http.HandleFunc("/vod/list", func(w http.ResponseWriter, r *http.Request) {
+		//暂时无需采用sse的方式，请求的时候直接调用即可
+		uidPath := r.URL.Query().Get("meetingId")
+		concretePath := filepath.Join(config.Path, uidPath)
+		allDirs, _ := GetAllDirectory(concretePath)
+
+		if len(allDirs) == 0 {
+			msg, _ := json.Marshal(JsonResult{Code: 400, Msg: "目录不存在"})
+			w.Write(msg)
+		} else {
+			//返回Json数据
+			data, _ := json.Marshal(JsonResult{Code: 200, Msg: "获取成功", AllDirName: allDirs})
+			w.Write(data)
 		}
 	})
 }
