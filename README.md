@@ -20,12 +20,14 @@
 
 ```toml
 [HLS]
-EnableWrite = false
-EnableMemory = false
-Fragment = 5
+EnableWrite = true
+EnableMemory = true
+Fragment = 10
 Window = 2
 Path = "hls"
+SliceNum = 10
 ```
+SliceNum    一个片段在内存中的切割数量
 EnableWrite 用来控制是否启用HLS文件写入功能
 EnableMemory 用来启用内存播放模式，开启后ts数据会保存在内存中
 
